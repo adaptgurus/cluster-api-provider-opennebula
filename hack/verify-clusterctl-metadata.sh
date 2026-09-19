@@ -10,7 +10,7 @@ grep -qx 'apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3' "$metadata" || {
 grep -qx 'kind: Metadata' "$metadata" || {
   echo 'clusterctl >=1.11 requires kind: Metadata' >&2; exit 1;
 }
-grep -qE '^[[:space:]]+releaseSeries:' "$metadata" || {
+grep -qE '^releaseSeries:' "$metadata" || {
   echo 'metadata releaseSeries is missing' >&2; exit 1;
 }
 grep -qE '^[[:space:]]+contract: v1beta1$' "$metadata" || {

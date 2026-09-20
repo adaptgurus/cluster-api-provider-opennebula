@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -71,6 +72,8 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	leaderDurations := defaultLeaderElectionDurations()
+	leaderDurations.bindFlags(flag.CommandLine)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -88,6 +91,10 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	if err := leaderDurations.validate(); err != nil {
+		setupLog.Error(err, "invalid leader election configuration")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -144,6 +151,9 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "913e58a3.cluster.x-k8s.io",
+		LeaseDuration:          &leaderDurations.lease,
+		RenewDeadline:          &leaderDurations.renew,
+		RetryPeriod:            &leaderDurations.retry,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -208,4 +218,39 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// leaderElectionDurations keeps the upstream defaults unless explicitly configured.
+// Election remains enabled or disabled solely by the existing --leader-elect flag.
+type leaderElectionDurations struct {
+	lease time.Duration
+	renew time.Duration
+	retry time.Duration
+}
+
+func defaultLeaderElectionDurations() leaderElectionDurations {
+	return leaderElectionDurations{lease: 15 * time.Second, renew: 10 * time.Second, retry: 2 * time.Second}
+}
+
+func (d *leaderElectionDurations) bindFlags(flags *flag.FlagSet) {
+	flags.DurationVar(&d.lease, "leader-elect-lease-duration", d.lease, "Leader lease duration; must exceed renew deadline and be at most 10m.")
+	flags.DurationVar(&d.renew, "leader-elect-renew-deadline", d.renew, "Leader renewal deadline; must exceed 1.2 times retry period.")
+	flags.DurationVar(&d.retry, "leader-elect-retry-period", d.retry, "Leader lease acquisition and renewal retry period.")
+}
+
+func (d leaderElectionDurations) validate() error {
+	if d.lease <= 0 || d.renew <= 0 || d.retry <= 0 {
+		return fmt.Errorf("leader election durations must be positive")
+	}
+	if d.lease > 10*time.Minute || d.renew > 10*time.Minute || d.retry > 10*time.Minute {
+		return fmt.Errorf("leader election durations must not exceed 10m")
+	}
+	if d.lease <= d.renew {
+		return fmt.Errorf("leader lease duration must exceed renew deadline")
+	}
+	// client-go applies 1.2 jitter to retry periods. Preserve its strict margin.
+	if float64(d.renew) <= 1.2*float64(d.retry) {
+		return fmt.Errorf("leader renewal deadline must exceed 1.2 times retry period")
+	}
+	return nil
 }
